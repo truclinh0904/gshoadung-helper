@@ -1732,7 +1732,7 @@ const CD = { v: null, ds: [], i: 0, muc: lay("hd_ct_muc", "de"), tu: [], trong: 
 const chuanTu = (s) => String(s == null ? "" : s).toLowerCase().replace(/[‘’ʼ`´]/g, "'").trim();
 const cotTu = (s) => chuanTu(s).replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
 function tachTu(nd) {
-  return String(nd).trim().split(/\s+/).filter(Boolean).map((t) => { const m = t.match(/^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/su); return { truoc: m[1], loi: m[2], sau: m[3] }; }).filter((x) => x.loi);
+  return String(nd).trim().split(/\s+/).join(" ").split(/\s+/).filter(Boolean).map((t) => { const m = t.match(/^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/su); return { truoc: m[1], loi: m[2], sau: m[3] }; }).filter((x) => x.loi);
 }
 function chonOTrong(tu) {
   const ung = []; tu.forEach((t, k) => { if (t.loi.length >= 3) ung.push(k); });
@@ -2638,21 +2638,64 @@ $("gcThem").addEventListener("click", () => {
   GC.rows.push({ bd: cuoi && laSo(cuoi.kt) ? cuoi.kt : "", kt: "", nd: "" }); if (GC.cur >= GC.rows.length - 1) GC.cur = GC.rows.length - 1; gcVe();
 });
 const tgGiay = (h, mi, s, ms) => (parseInt(h || "0", 10)) * 3600 + parseInt(mi, 10) * 60 + parseInt(s, 10) + parseFloat("0." + String(ms).padEnd(3, "0"));
+/* dòng tiếng Việt: có chữ riêng của tiếng Việt (đ, ă, ơ, ư...) hoặc từ hai dấu thanh trở lên */
+function laTiengViet(x) {
+  const t = String(x).toLowerCase();
+  if (/[đăơưạảẹẻẽịỉĩọỏụủũỳỷỹỵằắẳẵặầấẩẫậềếểễệồốổỗộờớởỡợừứửữự]/.test(t)) return true;
+  return (t.match(/[àáãâèéêìíòóõôùúý]/g) || []).length >= 2;
+}
+/* sửa khoảng trắng quanh dấu câu: "No,she doesn't .She" thành "No, she doesn't. She" */
+function gonCau(x) {
+  return String(x).replace(/\s+([,.?!;:])/g, "$1").replace(/([,.?!;:])(?=[A-Za-z])/g, "$1 ").replace(/([?!.])-\s*/g, "$1 - ").replace(/\s+/g, " ").trim();
+}
+/* Đọc .srt. Hai kiểu đều dùng được:
+   - mỗi khối có dòng tiếng Anh và dòng tiếng Việt;
+   - phần tiếng Việt và phần tiếng Anh tách riêng nhưng cùng mốc thời gian.
+   Các khối cùng mốc gộp thành một câu: tiếng Anh là câu luyện, tiếng Việt là nghĩa. */
 function docSrt(txt) {
   const re = /(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/;
-  const out = [];
-  String(txt).replace(/\r/g, "").split(/\n\s*\n/).forEach((k) => {
+  const nhom = {}, thuTu = [];
+  String(txt).replace(/^\uFEFF/, "").replace(/\r/g, "").split(/\n\s*\n/).forEach((k) => {
     const m = k.match(re); if (!m) return;
-    const nd = k.slice(k.indexOf(m[0]) + m[0].length).replace(/<[^>]+>/g, "").split("\n").map((x) => x.trim()).filter(Boolean).join(" ");
-    if (nd) out.push({ bd: lam2(tgGiay(m[1], m[2], m[3], m[4])), kt: lam2(tgGiay(m[5], m[6], m[7], m[8])), nd: nd });
+    const bd = lam2(tgGiay(m[1], m[2], m[3], m[4])), kt = lam2(tgGiay(m[5], m[6], m[7], m[8]));
+    const khoa = bd + "|" + kt;
+    if (!nhom[khoa]) { nhom[khoa] = { bd: bd, kt: kt, khoi: [] }; thuTu.push(khoa); }
+    const dong = k.slice(k.indexOf(m[0]) + m[0].length).replace(/<[^>]+>/g, "").split("\n").map((x) => x.trim()).filter(Boolean);
+    if (dong.length) nhom[khoa].khoi.push(dong);
   });
-  return out;
+  /* kiểu tách riêng: xem lần xuất hiện thứ mấy của cùng mốc thường là tiếng Việt */
+  const dem = [0, 0];
+  thuTu.forEach((khoa) => { const kh = nhom[khoa].khoi; if (kh.length === 2) kh.forEach((d, p) => { if (d.some(laTiengViet)) dem[p]++; }); });
+  const viTriViet = dem[0] + dem[1] > 0 ? (dem[0] >= dem[1] ? 0 : 1) : -1;
+  /* kiểu song ngữ trong một khối: dòng tiếng Việt thường nằm trên hay dưới */
+  const demDong = [0, 0];
+  thuTu.forEach((khoa) => nhom[khoa].khoi.forEach((d) => { if (d.length === 2 && laTiengViet(d[0]) !== laTiengViet(d[1])) demDong[laTiengViet(d[0]) ? 0 : 1]++; }));
+  const dongViet = demDong[0] + demDong[1] > 0 ? (demDong[0] >= demDong[1] ? 0 : 1) : -1;
+  const out = [];
+  thuTu.forEach((khoa) => {
+    const g = nhom[khoa], anh = [], viet = [];
+    const them = (ds, x) => { if (ds.indexOf(x) < 0) ds.push(x); };
+    if (g.khoi.length === 2 && viTriViet >= 0) {
+      const v = g.khoi[viTriViet], a = g.khoi[1 - viTriViet];
+      a.forEach((x) => them(anh, x));
+      if (v.join(" ") !== a.join(" ")) v.forEach((x) => them(viet, x));
+    } else {
+      g.khoi.forEach((d) => {
+        if (d.length === 2 && dongViet >= 0 && !laTiengViet(d[0]) && !laTiengViet(d[1]) && d[0] !== d[1]) { them(viet, d[dongViet]); them(anh, d[1 - dongViet]); }
+        else d.forEach((x) => them(laTiengViet(x) ? viet : anh, x));
+      });
+    }
+    g.anh = anh; g.viet = viet;
+    const nd = gonCau(g.anh.join(" "));
+    if (nd) out.push({ bd: g.bd, kt: g.kt, nd: nd, ng: g.viet.join(" ") });
+  });
+  return out.sort((a, b) => a.bd - b.bd);
 }
 $("gcNap").addEventListener("click", () => {
   const t = $("gcDan").value; if (!t.trim()) { $("gcTb").textContent = "Thầy hãy dán các câu vào ô trên."; return; }
   let rows = /-->/.test(t) ? docSrt(t) : [];
   if (!rows.length) rows = t.replace(/\r/g, "").split("\n").map((x) => x.trim()).filter(Boolean).map((x) => { const k = x.indexOf(" | "); return { bd: "", kt: "", nd: (k > 0 ? x.slice(0, k) : x).trim().slice(0, 200), ng: k > 0 ? x.slice(k + 3).trim().slice(0, 300) : "" }; });
-  else { const cu = GC.rows; rows.forEach((r, k) => { r.ng = cu[k] && cu[k].nd === r.nd ? cu[k].ng || "" : ""; }); }
+  else { const cu = GC.rows; rows.forEach((r, k) => { if (!r.ng) r.ng = cu[k] && cu[k].nd === r.nd ? cu[k].ng || "" : ""; }); }
   GC.rows = rows; GC.cur = 0; gcVe();
   $("gcTb").textContent = "Đã nạp " + rows.length + " câu. Thầy phát video và bấm \"Hết câu này\" để đặt mốc, rồi bấm Lưu các câu.";
 });
